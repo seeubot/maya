@@ -16,24 +16,25 @@ const CONFIG = {
     PLAYER_CONFIG: {
         streaming: {
             lowLatencyMode: true,
-            bufferingGoal: 10,
-            rebufferingGoal: 2,
-            bufferBehind: 10,
+            bufferingGoal: 15,
+            rebufferingGoal: 3,
+            bufferBehind: 15,
             retryParameters: {
-                timeout: 10000,
-                maxAttempts: 3,
+                timeout: 15000,
+                maxAttempts: 5,
                 baseDelay: 1000,
                 backoffFactor: 2
             }
         },
         manifest: {
             retryParameters: {
-                timeout: 8000,
-                maxAttempts: 2
+                timeout: 10000,
+                maxAttempts: 3
             }
         },
         abr: {
-            enabled: true
+            enabled: false,
+            defaultBandwidthEstimate: 5000000
         }
     }
 };
@@ -51,7 +52,11 @@ const AppState = {
     adTimer: null,
     lastAdTime: null,
     isAdShowing: false,
-    viewMode: 'list' // 'list' or 'grid'
+    viewMode: 'list',
+    isTvMode: false,
+    debugMode: false,
+    retryCount: 0,
+    maxRetries: 3
 };
 
 // ==============================
@@ -74,7 +79,13 @@ const DOM = {
     adChannelName: null,
     adTimer: null,
     refreshBtn: null,
-    viewToggleBtns: null
+    viewToggleBtns: null,
+    tvModeIndicator: null,
+    debugOverlay: null,
+    debugStatus: null,
+    debugDimensions: null,
+    debugReadyState: null,
+    debugNetwork: null
 };
 
 // ==============================
@@ -98,64 +109,206 @@ function cacheDOMElements() {
     DOM.adTimer = document.getElementById('ad-timer');
     DOM.refreshBtn = document.getElementById('refresh-btn');
     DOM.viewToggleBtns = document.querySelectorAll('.view-btn');
+    DOM.tvModeIndicator = document.getElementById('tv-mode');
+    DOM.debugOverlay = document.getElementById('debug-overlay');
+    DOM.debugStatus = document.getElementById('debug-status');
+    DOM.debugDimensions = document.getElementById('debug-dimensions');
+    DOM.debugReadyState = document.getElementById('debug-readystate');
+    DOM.debugNetwork = document.getElementById('debug-network');
 }
 
 async function initPlayer() {
+    // Install polyfills
     shaka.polyfill.installAll();
     
+    // Check browser support
     if (!shaka.Player.isBrowserSupported()) {
-        showError('Your browser is not supported for video playback.');
+        showError('Your browser is not supported for video playback. Please try Chrome, Firefox, or Edge.');
         return false;
     }
     
+    // Get video element
     AppState.video = document.querySelector('video');
-    AppState.player = new shaka.Player();
-    await AppState.player.attach(AppState.video);
+    if (!AppState.video) {
+        showError('Video element not found');
+        return false;
+    }
     
-    const container = DOM.videoContainer;
-    AppState.ui = new shaka.ui.Overlay(AppState.player, container, AppState.video);
-    
-    AppState.ui.configure({
-        controlPanelElements: [
-            'play_pause', 'time_and_duration', 'mute', 'volume',
-            'spacer', 'audio', 'quality', 'fullscreen'
-        ],
-        volumeBarColors: { base: '#3B82F6', level: '#3B82F6' },
-        seekBarColors: { base: '#FACC15', buffered: '#FACC15', played: '#FACC15' }
-    });
-    
-    AppState.player.configure(CONFIG.PLAYER_CONFIG);
-    
-    // Event listeners
-    AppState.player.addEventListener('error', (event) => {
-        console.error('Player error:', event.detail);
-        updateStreamStatus('offline');
-    });
+    // Initialize player
+    try {
+        AppState.player = new shaka.Player(AppState.video);
+        
+        // Configure for TV streaming
+        AppState.player.configure(CONFIG.PLAYER_CONFIG);
+        
+        // Initialize UI
+        if (DOM.videoContainer) {
+            AppState.ui = new shaka.ui.Overlay(AppState.player, DOM.videoContainer, AppState.video);
+            
+            // Configure UI controls
+            const controls = AppState.ui.getControls();
+            if (controls) {
+                controls.configure({
+                    controlPanelElements: [
+                        'play_pause', 'time_and_duration', 'volume', 'fullscreen'
+                    ],
+                    addSeekBar: true,
+                    showUnbufferedStart: true,
+                    volumeBarColors: { base: '#3B82F6', level: '#3B82F6' },
+                    seekBarColors: { base: '#FACC15', buffered: '#FACC15', played: '#FACC15' }
+                });
+            }
+        }
+        
+        // Setup event listeners
+        setupPlayerEvents();
+        
+        // Default settings
+        AppState.video.volume = 1.0;
+        AppState.video.muted = false;
+        
+        console.log('Player initialized successfully');
+        return true;
+        
+    } catch (error) {
+        console.error('Player initialization error:', error);
+        showError('Failed to initialize video player: ' + error.message);
+        return false;
+    }
+}
 
-    AppState.video.addEventListener('loadeddata', () => {
-        updateStreamStatus('live');
+function setupPlayerEvents() {
+    if (!AppState.player || !AppState.video) return;
+    
+    // Player error handling
+    AppState.player.addEventListener('error', (event) => {
+        console.error('Shaka Player Error:', event.detail);
+        updateStreamStatus('offline');
+        
+        if (AppState.currentChannel && AppState.retryCount < AppState.maxRetries) {
+            AppState.retryCount++;
+            console.log(`Retrying stream (${AppState.retryCount}/${AppState.maxRetries})...`);
+            
+            setTimeout(() => {
+                playChannel(AppState.currentChannel);
+            }, 3000);
+        } else {
+            AppState.retryCount = 0;
+        }
+        
+        updateDebugInfo();
     });
     
-    AppState.video.volume = 0.8;
+    // Player events for status updates
+    AppState.player.addEventListener('loading', () => {
+        updateStreamStatus('connecting');
+        updateDebugInfo();
+    });
     
-    return true;
+    AppState.player.addEventListener('loaded', () => {
+        updateStreamStatus('live');
+        AppState.retryCount = 0;
+        updateDebugInfo();
+    });
+    
+    AppState.player.addEventListener('buffering', (event) => {
+        if (event.buffering) {
+            updateStreamStatus('buffering');
+        } else {
+            updateStreamStatus('live');
+        }
+        updateDebugInfo();
+    });
+    
+    // Video element events
+    AppState.video.addEventListener('loadedmetadata', () => {
+        console.log('Video metadata loaded');
+        updateStreamStatus('live');
+        
+        // Force video dimensions
+        AppState.video.style.width = '100%';
+        AppState.video.style.height = '100%';
+        AppState.video.style.display = 'block';
+        
+        // Try to play
+        attemptAutoplay();
+        
+        updateDebugInfo();
+    });
+    
+    AppState.video.addEventListener('canplay', () => {
+        console.log('Video can play');
+        updateStreamStatus('live');
+        updateDebugInfo();
+    });
+    
+    AppState.video.addEventListener('playing', () => {
+        console.log('Video is playing');
+        updateStreamStatus('live');
+        
+        // Update TV mode status
+        if (window.innerWidth >= 1200) {
+            AppState.isTvMode = true;
+            DOM.tvModeIndicator.classList.add('active');
+        }
+        
+        updateDebugInfo();
+    });
+    
+    AppState.video.addEventListener('pause', () => {
+        updateStreamStatus('paused');
+        updateDebugInfo();
+    });
+    
+    AppState.video.addEventListener('ended', () => {
+        updateStreamStatus('ended');
+        updateDebugInfo();
+    });
+    
+    // Periodic debug updates
+    setInterval(updateDebugInfo, 1000);
 }
 
 async function initApp() {
     cacheDOMElements();
     
+    // Check if we're on a TV-like device
+    AppState.isTvMode = window.innerWidth >= 1200;
+    if (AppState.isTvMode) {
+        console.log('TV Mode detected');
+        DOM.tvModeIndicator.classList.add('active');
+    }
+    
+    // Initialize player
     const playerReady = await initPlayer();
-    if (!playerReady) return;
-
+    if (!playerReady) {
+        showError('Failed to initialize video player');
+        return;
+    }
+    
+    // Load channels
     await loadChannels();
+    
+    // Setup event listeners
     setupEventListeners();
     
-    // Set initial sidebar state based on screen size
+    // Set initial sidebar state
     if (window.innerWidth <= 768) {
         DOM.channelsSidebar.classList.remove('open');
     } else {
         DOM.channelsSidebar.classList.add('open');
     }
+    
+    // Enable debug mode with Shift+D
+    document.addEventListener('keydown', (e) => {
+        if (e.shiftKey && e.key === 'D') {
+            AppState.debugMode = !AppState.debugMode;
+            DOM.debugOverlay.classList.toggle('active', AppState.debugMode);
+            console.log(`Debug mode ${AppState.debugMode ? 'enabled' : 'disabled'}`);
+        }
+    });
+    
+    console.log('App initialized successfully');
 }
 
 // ==============================
@@ -182,17 +335,15 @@ function setupEventListeners() {
     // Error refresh
     DOM.refreshBtn.addEventListener('click', loadChannels);
     
-    // View mode toggle
+    // View mode toggle (only list view)
     DOM.viewToggleBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            const view = btn.dataset.view;
-            AppState.viewMode = view;
-            
+            // Force list view only
             DOM.viewToggleBtns.forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             
             DOM.channelGrid.classList.remove('grid-view', 'list-view');
-            DOM.channelGrid.classList.add(`${view}-view`);
+            DOM.channelGrid.classList.add('list-view');
         });
     });
     
@@ -211,6 +362,18 @@ function setupEventListeners() {
             } catch (e) {}
         }
     });
+    
+    // Window resize
+    window.addEventListener('resize', () => {
+        // Update TV mode
+        AppState.isTvMode = window.innerWidth >= 1200;
+        DOM.tvModeIndicator.classList.toggle('active', AppState.isTvMode);
+        
+        // Auto-close sidebar on mobile when playing
+        if (window.innerWidth <= 768 && AppState.currentChannel) {
+            DOM.channelsSidebar.classList.remove('open');
+        }
+    });
 }
 
 // ==============================
@@ -221,7 +384,10 @@ async function loadChannels() {
     showLoading();
     
     try {
-        const response = await fetch(CONFIG.API_URL);
+        const response = await fetch(CONFIG.API_URL, {
+            headers: CONFIG.DEFAULT_HEADERS
+        });
+        
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
@@ -231,6 +397,7 @@ async function loadChannels() {
         if (data.success && Array.isArray(data.data)) {
             AppState.allChannels = data.data;
             renderChannels();
+            console.log(`Loaded ${data.data.length} channels`);
         } else {
             throw new Error('Invalid API response format');
         }
@@ -264,8 +431,8 @@ function hideError() {
 
 function updateStreamStatus(status) {
     DOM.streamStatusIndicator.textContent = status.toUpperCase();
-    DOM.streamStatusIndicator.classList.remove('status-live', 'status-offline');
-    DOM.streamStatusIndicator.classList.add(`status-${status}`);
+    DOM.streamStatusIndicator.classList.remove('status-live', 'status-offline', 'status-connecting', 'status-buffering', 'status-paused', 'status-ended');
+    DOM.streamStatusIndicator.classList.add(`status-${status.toLowerCase()}`);
 }
 
 function renderChannels() {
@@ -347,7 +514,50 @@ function toggleSidebar() {
 }
 
 // ==============================
-// Ad System (Web-based simulation)
+// Debug Functions
+// ==============================
+function updateDebugInfo() {
+    if (!AppState.debugMode || !AppState.video) return;
+    
+    DOM.debugStatus.textContent = DOM.streamStatusIndicator.textContent;
+    DOM.debugDimensions.textContent = `${AppState.video.videoWidth}x${AppState.video.videoHeight}`;
+    DOM.debugReadyState.textContent = AppState.video.readyState;
+    DOM.debugNetwork.textContent = AppState.video.networkState;
+}
+
+function debugVideoPlayback() {
+    if (!AppState.video) {
+        console.error('Video element not found');
+        return;
+    }
+    
+    console.log('=== Video Debug Info ===');
+    console.log('Video element:', AppState.video);
+    console.log('Video src:', AppState.video.src);
+    console.log('Video readyState:', AppState.video.readyState);
+    console.log('Video error:', AppState.video.error);
+    console.log('Video dimensions:', AppState.video.videoWidth, 'x', AppState.video.videoHeight);
+    console.log('Is playing:', !AppState.video.paused);
+    console.log('Is muted:', AppState.video.muted);
+    console.log('Volume:', AppState.video.volume);
+    console.log('Current time:', AppState.video.currentTime);
+    console.log('Duration:', AppState.video.duration);
+    
+    // Check media tracks
+    const videoTracks = AppState.video.getVideoTracks ? AppState.video.getVideoTracks() : [];
+    const audioTracks = AppState.video.getAudioTracks ? AppState.video.getAudioTracks() : [];
+    
+    console.log('Video tracks:', videoTracks.length);
+    console.log('Audio tracks:', audioTracks.length);
+    
+    if (AppState.player) {
+        console.log('Player state:', AppState.player.getStats());
+        console.log('Player configuration:', AppState.player.getConfiguration());
+    }
+}
+
+// ==============================
+// Ad System
 // ==============================
 function showAdDialog(channelName) {
     if (AppState.isAdShowing) return;
@@ -393,7 +603,12 @@ function scheduleNextAd() {
 // Playback Functions
 // ==============================
 async function playChannel(channel) {
-    if (!AppState.player) return;
+    if (!AppState.player || !AppState.video) return;
+    
+    console.log(`Playing channel: ${channel.title}`);
+    
+    // Pause current playback
+    AppState.video.pause();
     
     // Update UI
     document.querySelectorAll('.channel-card').forEach(card => {
@@ -402,7 +617,7 @@ async function playChannel(channel) {
     
     AppState.currentChannel = channel;
     DOM.currentChannelElement.textContent = channel.title;
-    updateStreamStatus('offline');
+    updateStreamStatus('connecting');
     
     // Highlight selected channel
     const currentCard = Array.from(document.querySelectorAll('.channel-card')).find(card => 
@@ -413,87 +628,140 @@ async function playChannel(channel) {
         currentCard.focus();
     }
     
-    // Hide splash, show player
+    // Ensure player is visible
     DOM.splashScreen.style.display = 'none';
-    DOM.videoContainer.classList.add('active');
+    DOM.videoContainer.style.display = 'block';
+    DOM.videoContainer.style.visibility = 'visible';
     
     // Close sidebar on mobile
     if (window.innerWidth <= 768) {
         DOM.channelsSidebar.classList.remove('open');
     }
     
-    // Show initial ad before stream starts
-    showAdDialog(channel.title);
-    
-    // Wait for ad to finish, then load stream
-    setTimeout(async () => {
-        try {
-            await AppState.player.unload();
-            AppState.player.configure(CONFIG.PLAYER_CONFIG);
-            
-            // Configure DRM if available
-            if (channel.key && channel.key.includes(':')) {
-                const [keyId, keyValue] = channel.key.split(':');
-                AppState.player.configure({
-                    drm: {
-                        clearKeys: {
-                            [keyId]: keyValue
-                        }
-                    }
-                });
-            }
-            
-            // Configure request filters
-            AppState.player.getNetworkingEngine().clearAllRequestFilters();
-            AppState.player.getNetworkingEngine().registerRequestFilter((type, request) => {
-                request.headers['Referer'] = CONFIG.DEFAULT_HEADERS.Referer;
-                request.headers['User-Agent'] = CONFIG.DEFAULT_HEADERS['User-Agent'];
-                
-                if (channel.cookie) {
-                    request.headers['Cookie'] = channel.cookie;
-                }
-                
-                if (channel.cookie && 
-                    (type === shaka.net.NetworkingEngine.RequestType.MANIFEST ||
-                     type === shaka.net.NetworkingEngine.RequestType.SEGMENT)) {
-                    const hdneaMatch = channel.cookie.match(/__hdnea__=[^;]+/);
-                    if (hdneaMatch && !request.uris[0].includes('__hdnea__=')) {
-                        const separator = request.uris[0].includes('?') ? '&' : '?';
-                        request.uris[0] += separator + hdneaMatch[0];
+    // Show initial ad (simplified for TV)
+    if (!AppState.isAdShowing) {
+        showAdDialog(channel.title);
+        
+        // Load stream after ad
+        setTimeout(async () => {
+            await loadChannelStream(channel);
+        }, CONFIG.AD_DURATION);
+    } else {
+        // If ad already showing, load stream directly
+        await loadChannelStream(channel);
+    }
+}
+
+async function loadChannelStream(channel) {
+    try {
+        console.log('Loading stream for channel:', channel.title);
+        
+        // Unload previous content
+        await AppState.player.unload();
+        
+        // Configure DRM if available
+        if (channel.key && channel.key.includes(':')) {
+            const [keyId, keyValue] = channel.key.split(':');
+            AppState.player.configure({
+                drm: {
+                    clearKeys: {
+                        [keyId]: keyValue
                     }
                 }
             });
-            
-            await AppState.player.load(channel.url);
-            await attemptAutoplay();
-            
-            // Schedule recurring ads
-            scheduleNextAd();
-            
-            // Request fullscreen
-            requestFullscreen();
-            
-        } catch (error) {
-            console.error('Playback error:', error);
-            updateStreamStatus('offline');
         }
-    }, CONFIG.AD_DURATION);
+        
+        // Configure request headers for TV streams
+        AppState.player.getNetworkingEngine().registerRequestFilter((type, request) => {
+            request.headers['Referer'] = CONFIG.DEFAULT_HEADERS.Referer;
+            request.headers['User-Agent'] = CONFIG.DEFAULT_HEADERS['User-Agent'];
+            request.headers['Origin'] = 'https://www.jiotv.com';
+            
+            if (channel.cookie) {
+                request.headers['Cookie'] = channel.cookie;
+            }
+            
+            // Add hdnea parameter if available
+            if (channel.cookie && 
+                (type === shaka.net.NetworkingEngine.RequestType.MANIFEST ||
+                 type === shaka.net.NetworkingEngine.RequestType.SEGMENT)) {
+                const hdneaMatch = channel.cookie.match(/__hdnea__=[^;]+/);
+                if (hdneaMatch && !request.uris[0].includes('__hdnea__=')) {
+                    const separator = request.uris[0].includes('?') ? '&' : '?';
+                    request.uris[0] += separator + hdneaMatch[0];
+                }
+            }
+        });
+        
+        // Load the stream with retry parameters
+        await AppState.player.load(channel.url, null, {
+            retryParameters: {
+                maxAttempts: 3,
+                baseDelay: 1000,
+                backoffFactor: 2
+            }
+        });
+        
+        // Force video to play
+        await attemptAutoplay();
+        
+        // Schedule recurring ads
+        scheduleNextAd();
+        
+        // Request fullscreen on TV mode
+        if (AppState.isTvMode && !document.fullscreenElement) {
+            setTimeout(() => {
+                requestFullscreen();
+            }, 1000);
+        }
+        
+        console.log('Stream loaded successfully');
+        
+    } catch (error) {
+        console.error('Stream loading error:', error);
+        updateStreamStatus('offline');
+        
+        // Auto-retry
+        if (AppState.retryCount < AppState.maxRetries) {
+            AppState.retryCount++;
+            console.log(`Retrying stream (${AppState.retryCount}/${AppState.maxRetries})...`);
+            
+            setTimeout(() => {
+                loadChannelStream(channel);
+            }, 3000);
+        } else {
+            AppState.retryCount = 0;
+            showError(`Failed to load stream: ${error.message}`);
+        }
+    }
 }
 
 async function attemptAutoplay() {
     if (!AppState.video) return false;
     
     try {
+        // First try with sound
         AppState.video.muted = false;
         await AppState.video.play();
+        console.log('Autoplay with sound successful');
         return true;
     } catch (error) {
+        console.log('Autoplay with sound failed, trying muted:', error.message);
+        
         try {
+            // Try muted
             AppState.video.muted = true;
             await AppState.video.play();
+            console.log('Autoplay muted successful');
             return true;
         } catch (mutedError) {
-            console.log('Autoplay failed:', mutedError.message);
+            console.log('Autoplay completely failed:', mutedError.message);
+            
+            // Show play button overlay if needed
+            if (AppState.currentChannel) {
+                updateStreamStatus('ready');
+            }
+            
             return false;
         }
     }
@@ -504,8 +772,20 @@ function requestFullscreen() {
     try {
         if (playerArea.requestFullscreen) {
             playerArea.requestFullscreen();
+        } else if (playerArea.webkitRequestFullscreen) {
+            playerArea.webkitRequestFullscreen();
+        } else if (playerArea.mozRequestFullScreen) {
+            playerArea.mozRequestFullScreen();
+        } else if (playerArea.msRequestFullscreen) {
+            playerArea.msRequestFullscreen();
         } else if (AppState.video.webkitEnterFullscreen) {
             AppState.video.webkitEnterFullscreen();
+        }
+        
+        if (AppState.isTvMode) {
+            try {
+                screen.orientation.lock('landscape').catch(() => {});
+            } catch (e) {}
         }
     } catch (e) {
         console.warn("Fullscreen request failed:", e);
@@ -572,8 +852,10 @@ function handleKeyboardNavigation(e) {
                 e.preventDefault();
                 if (AppState.video.paused) {
                     AppState.video.play();
+                    updateStreamStatus('live');
                 } else {
                     AppState.video.pause();
+                    updateStreamStatus('paused');
                 }
             }
             break;
@@ -603,6 +885,35 @@ function handleKeyboardNavigation(e) {
             e.preventDefault();
             changeChannelByDelta(1);
             break;
+            
+        case ' ':
+            if (AppState.video && document.activeElement.tagName !== 'INPUT') {
+                e.preventDefault();
+                if (AppState.video.paused) {
+                    AppState.video.play();
+                } else {
+                    AppState.video.pause();
+                }
+            }
+            break;
+            
+        case 'm':
+        case 'M':
+            if (AppState.video) {
+                e.preventDefault();
+                AppState.video.muted = !AppState.video.muted;
+            }
+            break;
+            
+        case 'f':
+        case 'F':
+            e.preventDefault();
+            if (document.fullscreenElement) {
+                document.exitFullscreen();
+            } else {
+                requestFullscreen();
+            }
+            break;
     }
 }
 
@@ -610,3 +921,6 @@ function handleKeyboardNavigation(e) {
 // Start Application
 // ==============================
 window.addEventListener('DOMContentLoaded', initApp);
+
+// Expose debug function globally for testing
+window.debugVideoPlayback = debugVideoPlayback;
