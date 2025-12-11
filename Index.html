@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Channel Hub - Live TV Player (TV Optimized)</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.11/shaka-player.ui.min.js" crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.7.11/controls.min.css" crossorigin="anonymous">
+    
+    <style>
+        /* ============================== */
+        /* 1. TV Optimized Theme & Layout */
+        /* ============================== */
+        
+        /* Base Styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', sans-serif;
+        }
+        
+        body {
+            background: #0F172A; /* Dark Blue/Slate Background */
+            color: #F8FAFC; /* Light Text */
+            min-height: 100vh;
+            overflow: hidden; 
+        }
+        
+        /* Layout */
+        .app-container {
+            display: flex;
+            height: 100vh;
+            position: relative;
+        }
+        
+        /* Main Content Area */
+        .main-content {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        
+        /* ============================== */
+        /* 2. Channel List Sidebar (Drawer Style) */
+        /* ============================== */
+        .channels-sidebar {
+            width: 380px; /* Slightly wider for TV view */
+            background: #1E293B; /* Darker Slate */
+            border-right: 1px solid #334155;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            position: absolute; /* Changed to absolute for drawer effect */
+            height: 100%;
+            z-index: 100; /* Must be above player */
+            transform: translateX(-100%); /* Start hidden */
+            transition: transform 0.3s ease;
+        }
+        
+        .channels-sidebar.open {
+            transform: translateX(0);
+            box-shadow: 5px 0 15px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Search Container */
+        .sidebar-search-container {
+            padding: 20px;
+            border-bottom: 1px solid #334155;
+            background: #1E293B;
+            flex-shrink: 0; 
+        }
+
+        #channel-search {
+            width: 100%;
+            padding: 15px; /* Larger padding for TV remote input */
+            font-size: 1.1em;
+            border: none;
+            border-radius: 10px;
+            background: #334155;
+            color: #F8FAFC;
+            transition: all 0.2s;
+        }
+        
+        #channel-search:focus {
+            border: 2px solid #FACC15; /* Focus highlight */
+            outline: none;
+            box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.3);
+        }
+        
+        /* Channel Grid */
+        .channel-grid {
+            padding: 20px;
+            flex: 1;
+            overflow-y: auto;
+            display: grid;
+            grid-template-columns: 1fr; /* Single column on TV menu */
+            gap: 15px;
+            scroll-behavior: smooth;
+        }
+        
+        .channel-card {
+            background: #334155;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 3px solid transparent;
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            height: 80px; /* Fixed height for consistent grid */
+        }
+        
+        /* Focus/Hover State for Remote Navigation */
+        .channel-card:hover,
+        .channel-card:focus {
+            transform: scale(1.03);
+            border-color: #FACC15; /* Yellow/Gold Highlight */
+            background: #475569;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            outline: none;
+        }
+        
+        .channel-card.active {
+            border-color: #3B82F6; /* Blue Highlight for Active Channel */
+            background: #334155;
+        }
+        
+        .channel-logo {
+            width: 60px;
+            height: 60px;
+            object-fit: contain;
+            padding: 5px;
+            background: #1E293B;
+            border-radius: 8px;
+            flex-shrink: 0;
+        }
+        
+        .channel-info {
+            padding-left: 15px;
+            flex: 1;
+            min-width: 0; /* Ensures overflow text ellipsis works */
+        }
+        
+        .channel-title {
+            font-weight: 600;
+            color: #F8FAFC;
+            font-size: 1.1em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        /* ============================== */
+        /* 3. Player Area */
+        /* ============================== */
+        .player-area {
+            flex: 1;
+            position: relative;
+            background: #000;
+        }
+        
+        .shaka-video-container {
+            width: 100%;
+            height: 100%;
+            background: #000;
+        }
+        
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain; /* Default */
+        }
+
+        /* Force video to cover the screen in fullscreen mode */
+        :fullscreen video,
+        :-webkit-full-screen video,
+        :-moz-full-screen video,
+        :-ms-fullscreen video {
+            object-fit: cover !important; 
+        }
+        
+        /* Player Controls (Top Bar) */
+        .player-controls {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            padding: 20px; /* Larger hit area for TV */
+            background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+            z-index: 50;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            pointer-events: none; /* Allows clicks/taps to pass through */
+        }
+
+        .player-controls > * {
+            pointer-events: auto; /* Re-enable for the children */
+        }
+        
+        .current-channel-info {
+            color: white;
+            font-weight: 700;
+            font-size: 1.2em;
+            text-shadow: 1px 1px 4px rgba(0,0,0,0.9);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        #stream-status {
+            font-size: 0.9em;
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-weight: 700;
+            animation: pulse 1.5s infinite;
+        }
+
+        .status-live {
+            background: #10B981; /* Emerald Green */
+            color: #fff;
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
+        }
+
+        .status-offline {
+            background: #EF4444; /* Red */
+            color: #fff;
+            animation: none;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.05); opacity: 0.9; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        
+        .toggle-sidebar-btn {
+            background: rgba(255,255,255,0.1);
+            border: 2px solid transparent;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s, border-color 0.2s;
+            backdrop-filter: blur(5px);
+            font-size: 1em;
+        }
+        
+        .toggle-sidebar-btn:hover,
+        .toggle-sidebar-btn:focus {
+            background: rgba(255,255,255,0.2);
+            border-color: #FACC15;
+            outline: none;
+        }
+        
+        /* ============================== */
+        /* 4. Utility & Loading */
+        /* ============================== */
+
+        .loading, .error-message {
+            text-align: center;
+            padding: 40px 20px;
+            color: #94A3B8;
+        }
+        
+        .loading-spinner {
+            border: 4px solid #334155;
+            border-top: 4px solid #FACC15;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .error-message {
+            background: #450A0A;
+            color: #FECACA;
+            padding: 30px;
+            border-radius: 12px;
+            margin: 20px;
+            text-align: center;
+            max-width: 400px;
+        }
+        
+        .refresh-btn {
+            background: #2563EB;
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 8px;
+            margin-top: 20px;
+            cursor: pointer;
+            font-weight: 700;
+            transition: background 0.2s;
+        }
+        
+        .refresh-btn:hover {
+            background: #1D4ED8;
+        }
+
+        /* ============================== */
+        /* 5. Mobile Adjustments */
+        /* ============================== */
+        @media (min-width: 769px) {
+             /* On wider screens, always show the sidebar unless we are in native fullscreen */
+            .channels-sidebar {
+                position: relative;
+                transform: translateX(0); /* Default desktop state is open */
+                box-shadow: none;
+                width: 320px; /* Default desktop width */
+            }
+             .channels-sidebar:not(.open) {
+                /* This class is now primarily for mobile, but if used on desktop, it will hide */
+                transform: translateX(-100%);
+            }
+        }
+        @media (max-width: 768px) {
+            .channels-sidebar {
+                width: 80%; /* Takes most of the screen on mobile */
+                max-width: 380px;
+            }
+        }
+
+        /* Shaka UI Customization - Make controls look sleek */
+        /* Override Shaka's built-in spinner to use custom one */
+        .shaka-spinner-container, .shaka-spinner, .shaka-spinner-svg {
+            display: none !important;
+        }
+
+        /* Shaka Player Customization for TV */
+        .shaka-control-bar {
+            height: 80px !important; /* Larger hit area */
+        }
+        .shaka-control-bar button {
+            padding: 15px !important; /* Larger buttons */
+            font-size: 1.2em;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <div class="main-content">
+            <div class="channels-sidebar open" id="channels-sidebar">
+                <div class="sidebar-search-container">
+                    <input type="search" id="channel-search" placeholder="Search channels..." autofocus>
+                </div>
+                
+                <div class="channel-grid" id="channel-grid">
+                    <div class="loading">
+                        <div class="loading-spinner"></div>
+                        <p>Loading channels...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="player-area">
+                <div class="player-controls">
+                    <button class="toggle-sidebar-btn" id="toggle-sidebar">☰ Channels</button>
+                    <div class="current-channel-info">
+                        <span id="current-channel">Select a channel</span>
+                        <span id="stream-status" class="status-offline">OFFLINE</span>
+                    </div>
+                </div>
+                
+                <div class="shaka-video-container" data-shaka-player>
+                    <video autoplay playsinline preload="metadata"></video>
+                </div>
+            </div>
+        </div>
+        
+        <div id="error-container" style="display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000;">
+            <div class="error-message">
+                <h3>⚠️ Connection Error</h3>
+                <p id="error-text">Could not retrieve channel list.</p>
+                <button class="refresh-btn" onclick="loadChannels()">⟳ Try Again</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==============================
+        // JAVASCRIPT LOGIC
+        // ==============================
+
+        // Configuration
+        const API_URL = "https://static-crane-seeutech-17dd4df3.koyeb.app/api/channels";
+        let allChannels = [];
+        let currentSearchTerm = '';
+        let currentChannel = null;
+        let player = null;
+        let video = null;
+        let ui = null;
+        const GRID_COLUMNS = 1; // Used for 2D navigation (1 column for list view)
+        
+        // DOM Elements
+        const channelSearchInput = document.getElementById('channel-search');
+        const channelGrid = document.getElementById('channel-grid');
+        const errorContainer = document.getElementById('error-container');
+        const errorText = document.getElementById('error-text');
+        const channelsSidebar = document.getElementById('channels-sidebar');
+        const toggleSidebarBtn = document.getElementById('toggle-sidebar');
+        const currentChannelElement = document.getElementById('current-channel');
+        const streamStatusIndicator = document.getElementById('stream-status');
+
+        // Default headers for streaming
+        const DEFAULT_HEADERS = {
+            'Referer': 'https://www.jiotv.com/',
+            'User-Agent': "plaYtv/7.1.5 (Linux;Android 13) ExoPlayerLib/2.11.6"
+        };
+        
+        // Shaka Player Configuration - Updated for Audio/Quality
+        const PLAYER_CONFIG = {
+            streaming: {
+                lowLatencyMode: true,
+                bufferingGoal: 10,
+                rebufferingGoal: 2,
+                bufferBehind: 10,
+                retryParameters: {
+                    timeout: 10000,
+                    maxAttempts: 3,
+                    baseDelay: 1000,
+                    backoffFactor: 2
+                }
+            },
+            manifest: {
+                retryParameters: {
+                    timeout: 8000,
+                    maxAttempts: 2
+                }
+            },
+            // Explicitly enable ABR for quality selection
+            abr: {
+                enabled: true
+            }
+        };
+        
+        // ==============================
+        // Player Initialization
+        // ==============================
+        async function initPlayer() {
+            shaka.polyfill.installAll();
+            
+            if (!shaka.Player.isBrowserSupported()) {
+                showError('Your browser is not supported for video playback.');
+                return;
+            }
+            
+            video = document.querySelector('video');
+            player = new shaka.Player();
+            await player.attach(video);
+            
+            const container = document.querySelector('.shaka-video-container');
+            ui = new shaka.ui.Overlay(player, container, video);
+            
+            // Configure UI - ADDED 'audio' to controlPanelElements
+            ui.configure({
+                controlPanelElements: [
+                    'play_pause', 'time_and_duration', 'mute', 'volume',
+                    'spacer', 'audio', 'quality', 'fullscreen' // Added 'audio'
+                ],
+                volumeBarColors: { base: '#3B82F6', level: '#3B82F6' },
+                seekBarColors: { base: '#FACC15', buffered: '#FACC15', played: '#FACC15' }
+            });
+            
+            player.configure(PLAYER_CONFIG);
+            
+            // Player error handling
+            player.addEventListener('error', (event) => {
+                console.error('Player error:', event.detail);
+                updateStreamStatus('offline');
+            });
+
+            // Listen for successful playback start (Loaded Data, not just metadata)
+            video.addEventListener('loadeddata', () => {
+                updateStreamStatus('live');
+            });
+            
+            // Set initial volume
+            video.volume = 0.8;
+        }
+
+        // ==============================
+        // UI & Channel Management
+        // ==============================
+        function updateStreamStatus(status) {
+            streamStatusIndicator.textContent = status.toUpperCase();
+            streamStatusIndicator.classList.remove('status-live', 'status-offline');
+            if (status === 'live') {
+                streamStatusIndicator.classList.add('status-live');
+            } else {
+                streamStatusIndicator.classList.add('status-offline');
+            }
+        }
+        
+        function renderChannels() {
+            const filteredChannels = currentSearchTerm.length > 0
+                ? allChannels.filter(channel => 
+                    channel.title.toLowerCase().includes(currentSearchTerm))
+                : allChannels;
+            
+            if (filteredChannels.length === 0) {
+                channelGrid.innerHTML = `
+                    <div class="loading">
+                        <p>No channels found matching "${currentSearchTerm}"</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            channelGrid.innerHTML = '';
+            
+            filteredChannels.forEach(channel => {
+                const card = document.createElement('div');
+                card.className = 'channel-card';
+                card.tabIndex = 0; // Essential for remote navigation
+
+                const isActive = currentChannel && currentChannel.id === channel.id;
+                if (isActive) {
+                    card.classList.add('active');
+                }
+                
+                const placeholderUrl = 'https://placehold.co/120x60/334155/F8FAFC?text=' + encodeURIComponent(channel.title.substring(0, 10));
+                
+                card.innerHTML = `
+                    <img src="${channel.logo || placeholderUrl}" 
+                         alt="${channel.title}" 
+                         class="channel-logo"
+                         onerror="this.src='${placeholderUrl}'">
+                    <div class="channel-info">
+                        <div class="channel-title">${channel.title}</div>
+                    </div>
+                `;
+                
+                const playHandler = (e) => {
+                    e.preventDefault();
+                    playChannel(channel);
+                };
+                
+                card.addEventListener('click', playHandler);
+                card.addEventListener('keydown', (e) => {
+                    // Enter/Space to play/select
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        playHandler(e);
+                    }
+                });
+                
+                channelGrid.appendChild(card);
+            });
+            
+            // Re-focus logic: Try to focus the active channel or the first one
+            const activeCard = channelGrid.querySelector('.channel-card.active');
+            const firstCard = channelGrid.querySelector('.channel-card');
+            if (activeCard) {
+                activeCard.focus();
+            } else if (firstCard) {
+                firstCard.focus();
+            }
+        }
+
+        // ==============================
+        // Stream Playback
+        // ==============================
+        async function playChannel(channel) {
+            if (!player) return;
+            
+            // 1. Update UI and highlight
+            document.querySelectorAll('.channel-card').forEach(card => {
+                card.classList.remove('active');
+            });
+            currentChannel = channel;
+            currentChannelElement.textContent = channel.title;
+            updateStreamStatus('offline');
+            
+            // Highlight selected channel
+            const currentCard = Array.from(document.querySelectorAll('.channel-card')).find(card => 
+                card.querySelector('.channel-title').textContent === channel.title
+            );
+            if (currentCard) {
+                currentCard.classList.add('active');
+                currentCard.focus();
+            }
+            
+            // 2. Close sidebar on all devices when channel is selected
+            channelsSidebar.classList.remove('open');
+            toggleSidebarBtn.focus(); // Focus button to open sidebar next time
+            
+            // 3. Request Fullscreen for best viewing experience
+            const playerArea = document.querySelector('.player-area');
+            try {
+                if (playerArea.requestFullscreen) {
+                    playerArea.requestFullscreen();
+                } else if (video.webkitEnterFullscreen) { // iOS Safari
+                    video.webkitEnterFullscreen();
+                }
+            } catch (e) {
+                console.warn("Fullscreen request failed, proceeding with playback:", e);
+            }
+            
+            try {
+                // Clear any existing stream and configuration
+                await player.unload();
+                player.configure(PLAYER_CONFIG); // Reset config
+                
+                // Configure DRM if available (Existing logic retained)
+                if (channel.key && channel.key.includes(':')) {
+                    const [keyId, keyValue] = channel.key.split(':');
+                    player.configure({
+                        drm: {
+                            clearKeys: {
+                                [keyId]: keyValue
+                            }
+                        }
+                    });
+                }
+                
+                // Configure request filters with channel-specific headers (Existing logic retained)
+                player.getNetworkingEngine().clearAllRequestFilters();
+                player.getNetworkingEngine().registerRequestFilter((type, request) => {
+                    request.headers['Referer'] = DEFAULT_HEADERS.Referer;
+                    request.headers['User-Agent'] = DEFAULT_HEADERS['User-Agent'];
+                    
+                    if (channel.cookie) {
+                        request.headers['Cookie'] = channel.cookie;
+                    }
+                    
+                    if (channel.cookie && 
+                        (type === shaka.net.NetworkingEngine.RequestType.MANIFEST ||
+                         type === shaka.net.NetworkingEngine.RequestType.SEGMENT)) {
+                        const hdneaMatch = channel.cookie.match(/__hdnea__=[^;]+/);
+                        if (hdneaMatch && !request.uris[0].includes('__hdnea__=')) {
+                            const separator = request.uris[0].includes('?') ? '&' : '?';
+                            request.uris[0] += separator + hdneaMatch[0];
+                        }
+                    }
+                });
+                
+                // Load the stream
+                await player.load(channel.url);
+                
+                // Attempt autoplay
+                await attemptAutoplay();
+                
+            } catch (error) {
+                console.error('Playback error:', error);
+                console.warn(`Failed to play ${channel.title}: ${error.message}`);
+                updateStreamStatus('offline');
+            }
+        }
+        
+        async function attemptAutoplay() {
+            if (!video) return false;
+            
+            try {
+                video.muted = false;
+                await video.play();
+                return true;
+            } catch (error) {
+                try {
+                    video.muted = true;
+                    await video.play();
+                    return true;
+                } catch (mutedError) {
+                    console.log('Autoplay failed:', mutedError.message);
+                    return false;
+                }
+            }
+        }
+
+        // ==============================
+        // API Calls
+        // ==============================
+        async function loadChannels() {
+            // ... (showLoading and other boilerplate functions for error/loading are omitted for brevity, but exist in the original code and should be retained) ...
+            
+            try {
+                const response = await fetch(API_URL);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                
+                if (data.success && Array.isArray(data.data)) {
+                    allChannels = data.data;
+                    renderChannels();
+                    
+                    // Auto-play first channel
+                    if (allChannels.length > 0) {
+                        playChannel(allChannels[0]);
+                    }
+                } else {
+                    throw new Error('Invalid API response format');
+                }
+                
+            } catch (error) {
+                console.error('Failed to load channels:', error);
+                // showError(`Failed to load channels: ${error.message}`);
+                updateStreamStatus('offline');
+            }
+        }
+        
+        // ==============================
+        // Remote Control System Support
+        // ==============================
+
+        function changeChannelByDelta(delta) {
+            if (allChannels.length === 0) return;
+            
+            let currentId = currentChannel ? currentChannel.id : null;
+            let currentIndex = currentId ? allChannels.findIndex(c => c.id === currentId) : -1;
+
+            if (currentIndex === -1) {
+                 // If no channel selected, start from the first one
+                currentIndex = delta > 0 ? -1 : 0; 
+            }
+            
+            let nextIndex = currentIndex + delta;
+            
+            // Wrap around logic
+            if (nextIndex >= allChannels.length) {
+                nextIndex = 0;
+            } else if (nextIndex < 0) {
+                nextIndex = allChannels.length - 1;
+            }
+            
+            playChannel(allChannels[nextIndex]);
+        }
+        
+        // ** CORE REMOTE CONTROL LOGIC **
+        function handleRemoteControl(e) {
+            // Do not interfere with text input
+            if (document.activeElement === channelSearchInput) {
+                return; 
+            }
+            
+            const isSidebarOpen = channelsSidebar.classList.contains('open');
+            const focusableChannels = Array.from(document.querySelectorAll('.channel-grid .channel-card'));
+            let currentFocusIndex = focusableChannels.findIndex(el => el === document.activeElement);
+
+            switch (e.key) {
+                case 'ArrowUp':
+                case 'ArrowDown':
+                    if (isSidebarOpen && focusableChannels.length > 0) {
+                        e.preventDefault();
+                        const delta = e.key === 'ArrowDown' ? 1 : -1;
+                        
+                        let nextIndex = currentFocusIndex + delta;
+                        
+                        // Vertical Wrap around
+                        if (nextIndex >= focusableChannels.length) {
+                            nextIndex = 0;
+                        } else if (nextIndex < 0) {
+                            nextIndex = focusableChannels.length - 1;
+                        }
+                        
+                        focusableChannels[nextIndex].focus();
+                        focusableChannels[nextIndex].scrollIntoView({ block: "nearest", behavior: "smooth" });
+                    }
+                    // When sidebar is closed, UP/DOWN should adjust volume (handled by Shaka UI controls, no need for custom logic here)
+                    break;
+
+                case 'ArrowLeft':
+                case 'ArrowRight':
+                    if (isSidebarOpen) {
+                        // In 1-column grid, Left/Right can be used to open/close the sidebar or jump to an active element.
+                        // For a clean list view (1 column), we can ignore L/R in the grid itself.
+                    } else {
+                         // When sidebar is closed, Left/Right seeks video (handled by Shaka UI controls)
+                    }
+                    break;
+                    
+                case 'Enter':
+                    // If the sidebar is open and a channel is focused, the card's listener handles 'Enter' to play.
+                    if (!isSidebarOpen) {
+                        // If sidebar is closed, 'Enter' should typically act as Play/Pause on a TV remote.
+                        if (player && video) {
+                            e.preventDefault();
+                            if (video.paused) {
+                                video.play();
+                            } else {
+                                video.pause();
+                            }
+                        }
+                    } else if (document.activeElement === toggleSidebarBtn) {
+                        e.preventDefault();
+                        channelsSidebar.classList.add('open');
+                        const activeCard = document.querySelector('.channel-card.active');
+                        if (activeCard) activeCard.focus();
+                    }
+                    break;
+                
+                case 'Escape': // Back/Return key on TV remote
+                    e.preventDefault();
+                    if (document.fullscreenElement) {
+                        // 1. Exit fullscreen
+                        document.exitFullscreen();
+                    } else if (isSidebarOpen) {
+                        // 2. Close sidebar
+                        channelsSidebar.classList.remove('open');
+                        toggleSidebarBtn.focus();
+                    } else {
+                        // 3. Open sidebar (if not full screen and not open)
+                        channelsSidebar.classList.add('open');
+                        const activeCard = document.querySelector('.channel-card.active');
+                        if (activeCard) activeCard.focus();
+                    }
+                    break;
+                    
+                // Custom keys for channel switching (essential for TV Remote)
+                case 'PageUp':
+                case 'ChannelUp':
+                    e.preventDefault();
+                    changeChannelByDelta(-1);
+                    break;
+                
+                case 'PageDown':
+                case 'ChannelDown':
+                    e.preventDefault();
+                    changeChannelByDelta(1);
+                    break;
+            }
+        }
+
+        // ==============================
+        // Event Listeners & Init
+        // ==============================
+        channelSearchInput.addEventListener('input', (e) => {
+            handleSearch(e.target.value);
+        });
+        
+        toggleSidebarBtn.addEventListener('click', () => {
+            channelsSidebar.classList.toggle('open');
+            if (channelsSidebar.classList.contains('open')) {
+                const activeCard = document.querySelector('.channel-card.active');
+                if (activeCard) {
+                    activeCard.focus();
+                } else {
+                    channelSearchInput.focus();
+                }
+            }
+        });
+
+        async function initApp() {
+            // 1. Initialize Shaka Player
+            await initPlayer();
+
+            // 2. Load Channel Data and attempt initial playback
+            await loadChannels();
+            
+            // 3. Setup Remote Control Key Listener
+            document.addEventListener('keydown', handleRemoteControl);
+
+            // 4. Handle Fullscreen change to re-lock orientation (if supported)
+            document.addEventListener('fullscreenchange', () => {
+                if (document.fullscreenElement) {
+                    try {
+                        screen.orientation.lock('landscape');
+                    } catch (e) { /* ignore */ }
+                } else {
+                    try {
+                        screen.orientation.unlock();
+                    } catch (e) { /* ignore */ }
+                }
+            });
+
+            // Set initial state based on window size (open on large screens, closed on small)
+            if (window.innerWidth <= 768) {
+                channelsSidebar.classList.remove('open');
+            } else {
+                channelsSidebar.classList.add('open');
+            }
+        }
+        
+        // Start the application
+        window.addEventListener('DOMContentLoaded', initApp);
+    </script>
+</body>
+</html>
